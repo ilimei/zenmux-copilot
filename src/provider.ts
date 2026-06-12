@@ -268,10 +268,12 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
 
       if (!res.ok) {
         const errorText = await res.text();
-        const msg = `[${label}] API error response status=${res.status} statusText=${res.statusText} body=${errorText}`;
+        const serverRequestId = this.getServerRequestId(res.headers, errorText);
+        const requestIdText = serverRequestId ? ` serverRequestId=${serverRequestId}` : "";
+        const msg = `[${label}] API error response status=${res.status} statusText=${res.statusText}${requestIdText} body=${errorText}`;
         try { this.output.appendLine(msg); } catch { console.error(msg); }
         throw new Error(
-          `[${label}] API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}`
+          `[${label}] API error: [${res.status}] ${res.statusText}${requestIdText}${errorText ? `\n${errorText}` : ""}`
         );
       }
 
@@ -285,6 +287,48 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     }
 
     return response.body;
+  }
+
+  private getServerRequestId(headers: Headers, bodyText: string): string | undefined {
+    for (const headerName of ["x-zenmux-requestid", "x-request-id", "request-id", "x-correlation-id", "x-github-request-id", "cf-ray"]) {
+      const value = headers.get(headerName);
+      if (value) {
+        return value;
+      }
+    }
+
+    if (!bodyText) {
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(bodyText) as unknown;
+      return this.findRequestIdInErrorBody(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private findRequestIdInErrorBody(value: unknown): string | undefined {
+    if (!value || typeof value !== "object") {
+      return undefined;
+    }
+
+    const record = value as Record<string, unknown>;
+    for (const key of ["request_id", "requestID", "requestId", "id"]) {
+      const requestId = record[key];
+      if (typeof requestId === "string" && requestId.trim()) {
+        return requestId;
+      }
+    }
+
+    for (const nestedValue of Object.values(record)) {
+      const requestId = this.findRequestIdInErrorBody(nestedValue);
+      if (requestId) {
+        return requestId;
+      }
+    }
+    return undefined;
   }
 
   private getBaseUrlForApiType(config: vscode.WorkspaceConfiguration, apiType: ZenMuxApiType): string {
