@@ -69,6 +69,7 @@ You can adjust the following parameters in VS Code Settings:
 - `zenmux.baseUrl`: Base URL for the ZenMux gateway (Default: `https://zenmux.ai/api/v1`).
 - `zenmux.anthropic.baseUrl`: Anthropic-compatible backend URL.
 - `zenmux.anthropic.cacheTtl`: Prompt cache TTL for the Anthropic Messages API, either `5m` or `1h` (default: `5m`). `1h` cache writes cost more and are only sent to Anthropic-compatible models.
+- `zenmux.maxContextTokens`: Optional maximum context window advertised to VS Code. Use `0` for each model's full context, or values like `200000` to cap large-context models.
 - `zenmux.retry`: Request retry policy (enabled, max attempts, interval in ms).
 - `zenmux.delay`: Fixed delay between requests (in milliseconds).
 

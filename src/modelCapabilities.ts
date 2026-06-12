@@ -156,10 +156,31 @@ const DEFAULT_REASONING_EFFORT_CONFIGURATION_SCHEMA: vscode.LanguageModelConfigu
 	},
 };
 
-export function getReasoningConfigurationSchema(adapterProtocol: ZenMuxAdapterProtocol): vscode.LanguageModelConfigurationSchema {
-	return adapterProtocol === "anthropic"
-		? ANTHROPIC_REASONING_EFFORT_CONFIGURATION_SCHEMA
-		: DEFAULT_REASONING_EFFORT_CONFIGURATION_SCHEMA;
+const CONTEXT_WINDOW_CONFIGURATION = {
+	type: "number",
+	title: "Context Size",
+	enum: [128000, 200000, 500000, 1000000],
+	enumItemLabels: ["128K", "200K", "500K", "1M"],
+	default: 1000000,
+	description: "Maximum context window advertised to VS Code for this model.",
+	group: "tokens",
+};
+
+export function getModelConfigurationSchema(
+	adapterProtocol: ZenMuxAdapterProtocol,
+	supportsReasoning: boolean
+): vscode.LanguageModelConfigurationSchema {
+	const reasoningProperties = supportsReasoning
+		? (adapterProtocol === "anthropic"
+			? ANTHROPIC_REASONING_EFFORT_CONFIGURATION_SCHEMA.properties
+			: DEFAULT_REASONING_EFFORT_CONFIGURATION_SCHEMA.properties)
+		: {};
+	return {
+		properties: {
+			...reasoningProperties,
+			contextSize: CONTEXT_WINDOW_CONFIGURATION,
+		},
+	};
 }
 
 export function buildCustomEndpointUrl(baseUrl: string, apiType: ZenMuxApiType): string {

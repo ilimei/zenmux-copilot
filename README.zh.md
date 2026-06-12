@@ -69,6 +69,7 @@ npm run build
 - `zenmux.baseUrl`: ZenMux 网关的基础 URL（默认：`https://zenmux.ai/api/v1`）。
 - `zenmux.anthropic.baseUrl`: 兼容 Anthropic 的后端 URL。
 - `zenmux.anthropic.cacheTtl`: Anthropic Messages API 的提示缓存 TTL，可选 `5m` 或 `1h`，默认 `5m`。`1h` 写入成本更高，且只会发送给 Anthropic 兼容模型。
+- `zenmux.maxContextTokens`: 暴露给 VS Code 的最大上下文窗口。`0` 表示使用模型完整上下文；例如设置为 `200000` 可将 1M 上下文模型限制到 200K，减少提示上下文消耗。
 - `zenmux.retry`: 请求重试策略（是否启用、最大尝试次数、间隔毫秒数）。
 - `zenmux.delay`: 请求之间的固定延迟（毫秒）。
 

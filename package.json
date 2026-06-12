@@ -19,7 +19,7 @@
 		"type": "git",
 		"url": "git@github.com:ilimei/zenmux-copilot.git"
 	},
-	"version": "0.1.15",
+	"version": "0.1.16",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -104,6 +104,12 @@
 					],
 					"default": "5m",
 					"description": "Prompt cache TTL for Anthropic-compatible Messages API requests. 1h cache writes cost more and are only sent to Anthropic-compatible models."
+				},
+				"zenmux.maxContextTokens": {
+					"type": "number",
+					"default": 0,
+					"minimum": 0,
+					"description": "Optional maximum context window advertised to VS Code. Set 0 to use each model's full context, or a value like 200000 to cap large-context models and reduce prompt context usage."
 				},
 				"zenmux.retry": {
 					"type": "object",

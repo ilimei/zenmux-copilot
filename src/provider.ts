@@ -9,13 +9,13 @@ import {
   Progress,
 } from "vscode";
 
-import { createRetryConfig, ensureApiKey, executeWithRetry, fetchModels } from "./utils";
+import { createRetryConfig, ensureApiKey, executeWithRetry, fetchModels, mapRole } from "./utils";
 import {
   buildCustomEndpointUrl,
   normalizeZenMuxModel,
   NormalizedZenMuxModel,
   ZenMuxApiType,
-  getReasoningConfigurationSchema,
+  getModelConfigurationSchema,
 } from "./modelCapabilities";
 import { AnthropicApi } from "./anthropic/anthropicApi";
 import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
@@ -27,6 +27,7 @@ import { OpenaiApi } from "./openai/openaiApi";
 const DEFAULT_CONTEXT_LENGTH = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 const MODEL_REFRESH_TTL_MS = 5 * 60 * 1000;
+const MIN_INPUT_TOKENS = 1;
 
 /**
  * VS Code Chat provider backed by ZenMux Inference Providers.
@@ -97,18 +98,20 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     const chatModels = normalizedModels.filter((m) => m.isChatModel);
     this._normalizedModels = new Map(chatModels.map((m) => [m.model.slug ?? m.model.id, m]));
     this.output.appendLine(`Fetched ${models.length} models from ZenMux API, exposing ${chatModels.length} chat-capable models.`);
+    const maxContextTokens = this.getConfiguredMaxContextTokens();
     this._languageModels = chatModels.map(normalizedModel => {
       const m = normalizedModel.model;
-      const contextLength = m.context_length || DEFAULT_CONTEXT_LENGTH;
+      const rawContextLength = m.context_length || DEFAULT_CONTEXT_LENGTH;
+      const contextLength = maxContextTokens ? Math.min(rawContextLength, maxContextTokens) : rawContextLength;
       let maxOutputTokens = m.max_completion_tokens || DEFAULT_MAX_TOKENS;
       // Some models report max_completion_tokens equal (or close) to context_length,
       // meaning input and output share the context window. Clamp the output budget
       // so the input budget never collapses to ~0 (which makes VS Code prune all history).
-      const maxOutputCap = Math.max(1, Math.floor(contextLength / 4));
+      const maxOutputCap = Math.max(MIN_INPUT_TOKENS, Math.floor(contextLength / 4));
       if (maxOutputTokens > maxOutputCap) {
         maxOutputTokens = Math.min(maxOutputTokens, Math.max(maxOutputCap, DEFAULT_MAX_TOKENS));
       }
-      const maxInput = Math.max(1, contextLength - maxOutputTokens);
+      const maxInput = Math.max(MIN_INPUT_TOKENS, contextLength - maxOutputTokens);
       const modelId = m.slug ?? m.id;
       return {
         id: modelId,
@@ -120,9 +123,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
         maxInputTokens: maxInput,
         maxOutputTokens,
         capabilities: normalizedModel.capabilities,
-        ...(normalizedModel.supportsReasoning
-          ? { configurationSchema: getReasoningConfigurationSchema(normalizedModel.adapterProtocol) }
-          : {}),
+        configurationSchema: getModelConfigurationSchema(normalizedModel.adapterProtocol, normalizedModel.supportsReasoning),
       } as LanguageModelChatInformation;
     });
     this._languageModelsFetchedAt = Date.now();
@@ -142,8 +143,11 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     const supportParameters = Array.isArray(normalizedModel.selectedSupportedParameters)
       ? normalizedModel.selectedSupportedParameters.join(",")
       : normalizedModel.selectedSupportedParameters || "";
+    const effectiveModel = this.createEffectiveModelInfo(model, normalizedModel, options);
+    const requestMessages = await this.truncateMessagesToContext(messages, effectiveModel, token);
+
     // Update Token Usage
-    updateContextStatusBar(messages, model, this.statusBarItem);
+    updateContextStatusBar(requestMessages, effectiveModel, this.statusBarItem);
 
     // Apply delay between consecutive requests
     const config = vscode.workspace.getConfiguration();
@@ -189,7 +193,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
       if (apiType === "messages") {
         // Anthropic API mode
         const anthropicApi = new AnthropicApi();
-        const anthropicMessages = anthropicApi.convertMessages(messages, {
+        const anthropicMessages = anthropicApi.convertMessages(requestMessages, {
           includeReasoningInRequest: normalizedModel?.supportsReasoning ?? false,
           supportParameters,
           cacheTtl: this.getAnthropicCacheTtl(config),
@@ -201,7 +205,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
           model: model.id,
           messages: anthropicMessages,
           stream: true,
-          max_tokens: model.maxOutputTokens || DEFAULT_MAX_TOKENS,
+          max_tokens: effectiveModel.maxOutputTokens || DEFAULT_MAX_TOKENS,
         };
         requestBody = anthropicApi.prepareRequestBody(requestBody, normalizedModel, options);
 
@@ -210,7 +214,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
       } else {
         // OpenAI compatible API mode (default)
         const openaiApi = new OpenaiApi();
-        const openaiMessages = openaiApi.convertMessages(messages, {
+        const openaiMessages = openaiApi.convertMessages(requestMessages, {
           includeReasoningInRequest: false,
           supportParameters,
         });
@@ -250,6 +254,118 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
 
   private isModelCacheExpired(): boolean {
     return this._languageModelsFetchedAt === 0 || Date.now() - this._languageModelsFetchedAt > MODEL_REFRESH_TTL_MS;
+  }
+
+  private getConfiguredMaxContextTokens(): number | undefined {
+    const configured = vscode.workspace.getConfiguration().get<number | string>("zenmux.maxContextTokens", 0);
+    return this.parseContextWindowTokens(configured);
+  }
+
+  private parseContextWindowTokens(value: unknown): number | undefined {
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized || normalized === "auto") {
+        return undefined;
+      }
+      const multiplier = normalized.endsWith("m") ? 1_000_000 : normalized.endsWith("k") ? 1_000 : 1;
+      const numeric = Number(normalized.replace(/[km]$/, ""));
+      return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric * multiplier) : undefined;
+    }
+
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return undefined;
+    }
+    return Math.floor(value);
+  }
+
+  private createEffectiveModelInfo(
+    model: vscode.LanguageModelChatInformation,
+    normalizedModel: NormalizedZenMuxModel,
+    options: ProvideLanguageModelChatResponseOptions
+  ): vscode.LanguageModelChatInformation {
+    const rawContextLength = normalizedModel.model.context_length || model.maxInputTokens + model.maxOutputTokens || DEFAULT_CONTEXT_LENGTH;
+    const configuredContext = this.getConfiguredMaxContextTokens();
+    const selectedContext = this.getConfiguredContextSize(options);
+    const contextLength = Math.min(
+      rawContextLength,
+      configuredContext ?? rawContextLength,
+      selectedContext ?? rawContextLength
+    );
+    if (contextLength === model.maxInputTokens + model.maxOutputTokens) {
+      return model;
+    }
+
+    let maxOutputTokens = model.maxOutputTokens || DEFAULT_MAX_TOKENS;
+    const maxOutputCap = Math.max(MIN_INPUT_TOKENS, Math.floor(contextLength / 4));
+    if (maxOutputTokens > maxOutputCap) {
+      maxOutputTokens = Math.min(maxOutputTokens, Math.max(maxOutputCap, DEFAULT_MAX_TOKENS));
+    }
+
+    const effectiveModel = {
+      ...model,
+      maxInputTokens: Math.max(MIN_INPUT_TOKENS, contextLength - maxOutputTokens),
+      maxOutputTokens,
+    };
+    this.output.appendLine(
+      `Using contextSize=${contextLength} for model=${model.id}, maxInputTokens=${effectiveModel.maxInputTokens}, maxOutputTokens=${effectiveModel.maxOutputTokens}.`
+    );
+    return effectiveModel;
+  }
+
+  private getConfiguredContextSize(options: ProvideLanguageModelChatResponseOptions): number | undefined {
+    const config = options as ProvideLanguageModelChatResponseOptions & {
+      configuration?: Record<string, unknown>;
+      modelConfiguration?: Record<string, unknown>;
+    };
+    return this.parseContextWindowTokens(config.configuration?.contextSize ?? config.modelConfiguration?.contextSize);
+  }
+
+  private async truncateMessagesToContext(
+    messages: readonly LanguageModelChatRequestMessage[],
+    model: vscode.LanguageModelChatInformation,
+    token: CancellationToken
+  ): Promise<readonly LanguageModelChatRequestMessage[]> {
+    const maxInputTokens = model.maxInputTokens || DEFAULT_CONTEXT_LENGTH;
+    if (messages.length <= 1) {
+      return messages;
+    }
+
+    const tokenCounts = await Promise.all(messages.map((message) => prepareTokenCount(model, message, token)));
+    const totalTokens = tokenCounts.reduce((sum, count) => sum + count, 0);
+    if (totalTokens <= maxInputTokens) {
+      return messages;
+    }
+
+    const firstMessage = messages[0];
+    const hasSystemHead = firstMessage && mapRole(firstMessage) === "system";
+    const kept: LanguageModelChatRequestMessage[] = [];
+    let usedTokens = 0;
+
+    if (hasSystemHead) {
+      kept.push(firstMessage);
+      usedTokens += tokenCounts[0] ?? 0;
+    }
+
+    const suffix: LanguageModelChatRequestMessage[] = [];
+    const startIndex = hasSystemHead ? 1 : 0;
+    for (let i = messages.length - 1; i >= startIndex; i--) {
+      const count = tokenCounts[i] ?? 0;
+      if (suffix.length > 0 && usedTokens + count > maxInputTokens) {
+        break;
+      }
+      suffix.push(messages[i]);
+      usedTokens += count;
+    }
+
+    suffix.reverse();
+    const truncated = hasSystemHead ? [...kept, ...suffix] : suffix;
+    const droppedCount = messages.length - truncated.length;
+    if (droppedCount > 0) {
+      this.output.appendLine(
+        `Truncated ${droppedCount} message(s) for model=${model.id}; estimatedTokens=${totalTokens}, maxInputTokens=${maxInputTokens}.`
+      );
+    }
+    return truncated.length > 0 ? truncated : messages.slice(-1);
   }
 
   private async fetchStreamingResponseBody(
