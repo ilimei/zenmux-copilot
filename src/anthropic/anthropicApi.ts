@@ -150,7 +150,9 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			}
 		}
 
-		const sanitized = this.trimAssistantTextEndings(this.sanitizeToolUsePairs(out));
+		const sanitized = this.appendSyntheticUserAfterTrailingAssistant(
+			this.trimAssistantTextEndings(this.sanitizeToolUsePairs(out))
+		);
 
 		// 为关键消息添加缓存控制。Anthropic 最多支持 4 个缓存断点：
 		// 1. 优先给上下文消息打断点；2. 始终给最后一条消息打断点；3. 剩余配额给长文本。
@@ -204,6 +206,24 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 			return { ...message, content };
 		});
+	}
+
+	private appendSyntheticUserAfterTrailingAssistant(messages: AnthropicMessage[]): AnthropicMessage[] {
+		const last = messages[messages.length - 1];
+		if (last?.role !== "assistant") {
+			return messages;
+		}
+
+		console.warn(
+			`[Anthropic Provider] Trailing assistant message detected; appending synthetic user message. Total messages: ${messages.length}`
+		);
+		return [
+			...messages,
+			{
+				role: "user",
+				content: [{ type: "text", text: "Please continue." }],
+			},
+		];
 	}
 
 	private selectCacheBreakpoints(messages: AnthropicMessage[], maxCount: number): Set<number> {
