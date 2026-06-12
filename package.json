@@ -19,7 +19,7 @@
 		"type": "git",
 		"url": "git@github.com:ilimei/zenmux-copilot.git"
 	},
-	"version": "0.1.14",
+	"version": "0.1.15",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
