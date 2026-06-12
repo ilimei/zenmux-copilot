@@ -150,7 +150,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			}
 		}
 
-		const sanitized = this.sanitizeToolUsePairs(out);
+		const sanitized = this.trimAssistantTextEndings(this.sanitizeToolUsePairs(out));
 
 		// 为关键消息添加缓存控制。Anthropic 最多支持 4 个缓存断点：
 		// 1. 优先给上下文消息打断点；2. 始终给最后一条消息打断点；3. 剩余配额给长文本。
@@ -187,6 +187,23 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		});
 
 		return messagesWithCache;
+	}
+
+	private trimAssistantTextEndings(messages: AnthropicMessage[]): AnthropicMessage[] {
+		return messages.map((message) => {
+			if (message.role !== "assistant" || !Array.isArray(message.content)) {
+				return message;
+			}
+
+			const content = message.content.map((block) => {
+				if (block.type !== "text") {
+					return block;
+				}
+				return { ...block, text: block.text.trimEnd() };
+			});
+
+			return { ...message, content };
+		});
 	}
 
 	private selectCacheBreakpoints(messages: AnthropicMessage[], maxCount: number): Set<number> {
