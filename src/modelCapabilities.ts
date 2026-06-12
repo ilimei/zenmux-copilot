@@ -76,16 +76,16 @@ export function supportsParameter(supportedParameters: string | string[] | undef
 	return parseList(supportedParameters).has(parameter.toLowerCase());
 }
 
-export function modelSupportsTools(model: ZenMuxModelInfo | undefined): boolean {
-	if (!model) {
-		return true;
-	}
-	return normalizeZenMuxModel(model).supportsTools;
+export function modelSupportsTools(model: NormalizedZenMuxModel | undefined): boolean {
+	return model?.supportsTools ?? false;
 }
 
-export function modelSupportsReasoning(model: ZenMuxModelInfo | undefined): boolean {
+export function modelSupportsReasoning(model: NormalizedZenMuxModel | ZenMuxModelInfo | undefined): boolean {
 	if (!model) {
 		return false;
+	}
+	if ("supportsReasoning" in model) {
+		return model.supportsReasoning;
 	}
 	return Boolean(model.capabilities?.reasoning) || (model.supports_reasoning ?? 0) > 0;
 }

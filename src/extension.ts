@@ -52,12 +52,12 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 			if (!apiKey.trim()) {
 				await context.secrets.delete("zenmux.apiKey");
-				await provider.refreshModels(true);
+				await refreshModelsAfterKeyChange(provider, output);
 				vscode.window.showInformationMessage("ZenMux API key cleared.");
 				return;
 			}
 			await context.secrets.store("zenmux.apiKey", apiKey.trim());
-			await provider.refreshModels(true);
+			await refreshModelsAfterKeyChange(provider, output);
 			vscode.window.showInformationMessage("ZenMux API key saved.");
 		})
 	);
@@ -76,6 +76,14 @@ export function activate(context: vscode.ExtensionContext) {
 			await subscriptionStatusBar.refresh({ force: true, silent: false });
 		})
 	);
+}
+
+async function refreshModelsAfterKeyChange(provider: ZenMuxChatModelProvider, output: vscode.OutputChannel): Promise<void> {
+	try {
+		await provider.refreshModels(true);
+	} catch (error) {
+		output.appendLine(`[ZenMux Model Provider] Failed to refresh models after API key change: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 export function deactivate() {}

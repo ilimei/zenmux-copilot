@@ -22,7 +22,6 @@ import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
 import { prepareTokenCount } from "./provideToken";
 import { updateContextStatusBar } from "./statusBar";
 import { OpenaiApi } from "./openai/openaiApi";
-import { ZenMuxModelInfo } from "./types";
 
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
@@ -36,7 +35,6 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
   /** Track last request completion time for delay calculation. */
   private _lastRequestTime: number | null = null;
 
-  private _models: ZenMuxModelInfo[] = [];
   private _normalizedModels = new Map<string, NormalizedZenMuxModel>();
   private _languageModels: vscode.LanguageModelChatInformation[] = [];
   private _languageModelsFetchedAt = 0;
@@ -84,7 +82,6 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
   private async doRefreshModels(silent: boolean): Promise<void> {
     const apiKey = await ensureApiKey(silent, this.secrets);
     if (!apiKey) {
-      this._models = [];
       this._normalizedModels.clear();
       this._languageModels = [];
       this._languageModelsFetchedAt = 0;
@@ -98,7 +95,6 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     const { models } = await fetchModels(apiKey, this.userAgent, this.output);
     const normalizedModels = models.map(normalizeZenMuxModel);
     const chatModels = normalizedModels.filter((m) => m.isChatModel);
-    this._models = chatModels.map((m) => m.model);
     this._normalizedModels = new Map(chatModels.map((m) => [m.model.slug ?? m.model.id, m]));
     this.output.appendLine(`Fetched ${models.length} models from ZenMux API, exposing ${chatModels.length} chat-capable models.`);
     this._languageModels = chatModels.map(normalizedModel => {
@@ -139,14 +135,13 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     options: ProvideLanguageModelChatResponseOptions,
     progress: Progress<vscode.LanguageModelResponsePart>,
     token: CancellationToken) {
-    const zenMuxModel = this._models.find(m => (m.slug ?? m.id) === model.id);
-    const normalizedModel = this._normalizedModels.get(model.id) ?? (zenMuxModel ? normalizeZenMuxModel(zenMuxModel) : undefined);
-    const effectiveZenMuxModel = zenMuxModel && normalizedModel
-      ? { ...zenMuxModel, supported_parameters: normalizedModel.selectedSupportedParameters }
-      : zenMuxModel;
-    const supportParameters = Array.isArray(effectiveZenMuxModel?.supported_parameters)
-      ? effectiveZenMuxModel.supported_parameters.join(",")
-      : effectiveZenMuxModel?.supported_parameters || "";
+    const normalizedModel = this._normalizedModels.get(model.id);
+    if (!normalizedModel) {
+      throw new Error(`ZenMux model metadata is unavailable for ${model.id}. Refresh the model list and try again.`);
+    }
+    const supportParameters = Array.isArray(normalizedModel.selectedSupportedParameters)
+      ? normalizedModel.selectedSupportedParameters.join(",")
+      : normalizedModel.selectedSupportedParameters || "";
     // Update Token Usage
     updateContextStatusBar(messages, model, this.statusBarItem);
 
@@ -206,32 +201,10 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
           stream: true,
           max_tokens: model.maxOutputTokens || DEFAULT_MAX_TOKENS,
         };
-        requestBody = anthropicApi.prepareRequestBody(requestBody, effectiveZenMuxModel, options);
+        requestBody = anthropicApi.prepareRequestBody(requestBody, normalizedModel, options);
 
-        // send Anthropic chat request with retry
-        const response = await executeWithRetry(async () => {
-          const res = await fetch(requestUrl, {
-            method: "POST",
-            headers: this.getRequestHeaders(apiType, apiKey),
-            body: JSON.stringify(requestBody),
-          });
-
-          if (!res.ok) {
-            const errorText = await res.text();
-            const msg = `[Anthropic Provider] Anthropic API error response status=${res.status} statusText=${res.statusText} body=${errorText}`;
-            try { this.output.appendLine(msg); } catch { console.error(msg); }
-            throw new Error(
-              `Anthropic API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}`
-            );
-          }
-
-          return res;
-        }, createRetryConfig());
-
-        if (!response.body) {
-          throw new Error("No response body from Anthropic API");
-        }
-        await anthropicApi.processStreamingResponse(response.body, trackingProgress, token);
+        const responseBody = await this.fetchStreamingResponseBody(apiType, apiKey, requestUrl, requestBody, "Anthropic Provider");
+        await anthropicApi.processStreamingResponse(responseBody, trackingProgress, token);
       } else {
         // OpenAI compatible API mode (default)
         const openaiApi = new OpenaiApi();
@@ -247,35 +220,11 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
           stream: true,
           stream_options: { include_usage: true },
         };
-        requestBody = openaiApi.prepareRequestBody(requestBody, effectiveZenMuxModel, options);
+        requestBody = openaiApi.prepareRequestBody(requestBody, normalizedModel, options);
         // console.debug("[ZenMux Model Provider] RequestBody:", JSON.stringify(requestBody));
 
-        // send chat request with retry
-        const response = await executeWithRetry(async () => {
-          const res = await fetch(requestUrl, {
-            method: "POST",
-            headers: this.getRequestHeaders(apiType, apiKey),
-            body: JSON.stringify(requestBody),
-          });
-
-          if (!res.ok) {
-            const errorText = await res.text();
-            const msg = `[ZenMux Provider] ZenMux API error response status=${res.status} statusText=${res.statusText} body=${errorText}`;
-            try { this.output.appendLine(msg); } catch { console.error(msg); }
-            throw new Error(
-              `[ZenMux Provider] ZenMux API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}`
-            );
-          }
-
-          return res;
-        }, createRetryConfig());
-
-        if (!response.body) {
-          const msg = "[ZenMux Provider] No response body from ZenMux API";
-          try { this.output.appendLine(msg); } catch { console.error(msg); }
-          throw new Error("No response body from ZenMux API");
-        }
-        await openaiApi.processStreamingResponse(response.body, trackingProgress, token);
+        const responseBody = await this.fetchStreamingResponseBody(apiType, apiKey, requestUrl, requestBody, "ZenMux Provider");
+        await openaiApi.processStreamingResponse(responseBody, trackingProgress, token);
       }
     } catch (err) {
       console.error("[ZenMux Model Provider] Chat request failed", {
@@ -299,6 +248,41 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
 
   private isModelCacheExpired(): boolean {
     return this._languageModelsFetchedAt === 0 || Date.now() - this._languageModelsFetchedAt > MODEL_REFRESH_TTL_MS;
+  }
+
+  private async fetchStreamingResponseBody(
+    apiType: ZenMuxApiType,
+    apiKey: string,
+    requestUrl: string,
+    requestBody: unknown,
+    label: string,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const response = await executeWithRetry(async () => {
+      const res = await fetch(requestUrl, {
+        method: "POST",
+        headers: this.getRequestHeaders(apiType, apiKey),
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        const msg = `[${label}] API error response status=${res.status} statusText=${res.statusText} body=${errorText}`;
+        try { this.output.appendLine(msg); } catch { console.error(msg); }
+        throw new Error(
+          `[${label}] API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}`
+        );
+      }
+
+      return res;
+    }, createRetryConfig());
+
+    if (!response.body) {
+      const msg = `[${label}] No response body from API`;
+      try { this.output.appendLine(msg); } catch { console.error(msg); }
+      throw new Error(msg);
+    }
+
+    return response.body;
   }
 
   private getBaseUrlForApiType(config: vscode.WorkspaceConfiguration, apiType: ZenMuxApiType): string {

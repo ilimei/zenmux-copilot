@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { RetryConfig, ZenMuxModelInfo, ZenMuxModelResponse } from "./types";
 import { OpenAIFunctionToolDef } from "./openai/openaiTypes";
-import { modelSupportsTools, supportsParameter as supportsModelParameter } from "./modelCapabilities";
+import { modelSupportsTools, supportsParameter as supportsModelParameter, type NormalizedZenMuxModel } from "./modelCapabilities";
 
 const ZENMUX_MODELS_URL = "https://zenmux.ai/api/frontend/model/available/list?sort=newest";
 
@@ -151,7 +151,7 @@ export function collectToolResultText(pr: { content?: ReadonlyArray<unknown> }):
  */
 export function convertToolsToOpenAIWithSupport(
 	options: vscode.ProvideLanguageModelChatResponseOptions,
-	model?: ZenMuxModelInfo
+	model: NormalizedZenMuxModel
 ): {
 	tools?: OpenAIFunctionToolDef[];
 	tool_choice?: "auto" | { type: "function"; function: { name: string } };

@@ -7,8 +7,6 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem, ReasoningConfig, ZenMuxModelInfo } from "../types";
-
 import type {
 	OpenAIChatMessage,
 	OpenAIToolCall,
@@ -27,11 +25,11 @@ import {
 	supportsParameter,
 	mapRole,
 } from "../utils";
-import { getConfiguredReasoningEffort, modelSupportsReasoning } from "../modelCapabilities";
+import { getConfiguredReasoningEffort, modelSupportsReasoning, type NormalizedZenMuxModel } from "../modelCapabilities";
 
 import { CommonApi } from "../commonApi";
 
-export class OpenaiApi extends CommonApi {
+export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unknown>> {
 	constructor() {
 		super();
 	}
@@ -194,11 +192,11 @@ export class OpenaiApi extends CommonApi {
 	}
 
 	prepareRequestBody(
-		rb: any,
-		um: ZenMuxModelInfo | undefined,
+		rb: Record<string, unknown>,
+		model: NormalizedZenMuxModel,
 		options: ProvideLanguageModelChatResponseOptions,
-	): any {
-		const orb = rb as Record<string, unknown>;
+	): Record<string, unknown> {
+		const orb = rb;
 		// // temperature
 		// const oTemperature = options.modelOptions?.temperature ?? 0;
 		// const temperature = um?.temperature ?? oTemperature;
@@ -275,12 +273,12 @@ export class OpenaiApi extends CommonApi {
 		// Reasoning depth selected by the user in the model picker. ZenMux maps
 		// reasoning_effort onto the model-specific reasoning parameters.
 		const reasoningEffort = getConfiguredReasoningEffort(options);
-		if (reasoningEffort && modelSupportsReasoning(um)) {
+		if (reasoningEffort && modelSupportsReasoning(model)) {
 			orb.reasoning_effort = reasoningEffort;
 		}
 
 		// tools
-		const toolConfig = convertToolsToOpenAIWithSupport(options, um);
+		const toolConfig = convertToolsToOpenAIWithSupport(options, model);
 		if (toolConfig.tools) {
 			orb.tools = toolConfig.tools;
 		}
@@ -319,7 +317,7 @@ export class OpenaiApi extends CommonApi {
 	}
 
 	/**
-	 * Read and parse the HF Router streaming (SSE-like) response and report parts.
+	 * Read and parse the ZenMux streaming (SSE-like) response and report parts.
 	 * @param responseBody The readable stream body.
 	 * @param progress Progress reporter for streamed parts.
 	 * @param token Cancellation token.

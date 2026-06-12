@@ -89,17 +89,12 @@
 				"zenmux.baseUrl": {
 					"type": "string",
 					"default": "https://zenmux.ai/api/v1",
-					"description": "The base URL for the ZenMux Compatible Inference API. Default value is Hugging Face."
+					"description": "The base URL for the ZenMux OpenAI-compatible inference API."
 				},
 				"zenmux.anthropic.baseUrl": {
 					"type": "string",
 					"default": "https://zenmux.ai/api/anthropic",
-					"description": "The base URL for the Anthropic Compatible Inference API. Default value is Anthropic official API."
-				},
-				"zenmux.vertex.baseUrl": {
-					"type": "string",
-					"default": "https://zenmux.ai/api/vertex-ai",
-					"description": "The base URL for the Vertex AI Compatible Inference API. Default value is Google Vertex AI official API."
+					"description": "The base URL for the ZenMux Anthropic-compatible inference API."
 				},
 				"zenmux.retry": {
 					"type": "object",

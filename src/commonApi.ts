@@ -8,13 +8,10 @@ import {
 	CancellationToken,
 } from "vscode";
 
-import type { OpenAIChatMessage } from "./openai/openaiTypes";
-import type { AnthropicMessage, AnthropicRequestBody } from "./anthropic/anthropicTypes";
-import type { VertexContent, VertexRequestBody } from "./vertex/vertexTypes";
-import { HFModelItem, ZenMuxModelInfo } from "./types";
+import type { NormalizedZenMuxModel } from "./modelCapabilities";
 import { tryParseJSONObject } from "./utils";
 
-export abstract class CommonApi {
+export abstract class CommonApi<TMessage, TRequestBody> {
 	/** Buffer for assembling streamed tool calls by index. */
 	protected _toolCallBuffers: Map<number, { id?: string; name?: string; args: string }> = new Map<
 		number,
@@ -54,7 +51,7 @@ export abstract class CommonApi {
 	abstract convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
 		modelConfig: { includeReasoningInRequest: boolean }
-	): Array<OpenAIChatMessage | AnthropicMessage | VertexContent>;
+	): TMessage[];
 
 	/**
 	 * Construct request body for Specific api
@@ -63,10 +60,10 @@ export abstract class CommonApi {
 	 * @param options From VS Code
 	 */
 	abstract prepareRequestBody(
-		rb: any,
-		um: ZenMuxModelInfo | undefined,
+		rb: TRequestBody,
+		model: NormalizedZenMuxModel,
 		options: ProvideLanguageModelChatResponseOptions
-	): any;
+	): TRequestBody;
 
 	/**
 	 * Process specific api streaming response (JSON lines format).

@@ -7,8 +7,6 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem, ZenMuxModelInfo } from "../types";
-
 import type {
 	AnthropicMessage,
 	AnthropicRequestBody,
@@ -19,11 +17,11 @@ import type {
 } from "./anthropicTypes";
 
 import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAIWithSupport, supportsParameter, mapRole } from "../utils";
-import { computeThinkingBudget, getConfiguredReasoningEffort, modelSupportsReasoning } from "../modelCapabilities";
+import { computeThinkingBudget, getConfiguredReasoningEffort, modelSupportsReasoning, type NormalizedZenMuxModel } from "../modelCapabilities";
 
 import { CommonApi } from "../commonApi";
 
-export class AnthropicApi extends CommonApi {
+export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBody> {
 	private _systemContent: string | undefined;
 
 	constructor() {
@@ -324,11 +322,11 @@ export class AnthropicApi extends CommonApi {
 	}
 
 	prepareRequestBody(
-		rb: any,
-		um: ZenMuxModelInfo | undefined,
+		rb: AnthropicRequestBody,
+		model: NormalizedZenMuxModel,
 		options: ProvideLanguageModelChatResponseOptions
-	): any {
-		const arb = rb as AnthropicRequestBody;
+	): AnthropicRequestBody {
+		const arb = rb;
 		// Set max_tokens (required for Anthropic)
 		// if (um?.max_tokens !== undefined) {
 		// 	arb.max_tokens = um.max_tokens;
@@ -364,7 +362,7 @@ export class AnthropicApi extends CommonApi {
 		// }
 
 		// Add tools configuration
-		const toolConfig = convertToolsToOpenAIWithSupport(options, um);
+		const toolConfig = convertToolsToOpenAIWithSupport(options, model);
 		if (toolConfig.tools) {
 			// Convert OpenAI tool definitions to Anthropic format
 			arb.tools = toolConfig.tools.map((tool) => ({
@@ -392,12 +390,12 @@ export class AnthropicApi extends CommonApi {
 		const reasoningEffort = getConfiguredReasoningEffort(options);
 		if (
 			reasoningEffort &&
-			modelSupportsReasoning(um) &&
+			modelSupportsReasoning(model) &&
 			arb.tool_choice?.type !== "tool"
 		) {
-			if (supportsParameter(um?.supported_parameters, "output_config")) {
+			if (supportsParameter(model.selectedSupportedParameters, "output_config")) {
 				arb.output_config = { effort: reasoningEffort };
-			} else if (supportsParameter(um?.supported_parameters, "thinking")) {
+			} else if (supportsParameter(model.selectedSupportedParameters, "thinking")) {
 				const maxTokens = arb.max_tokens ?? 4096;
 				arb.thinking = {
 					type: "enabled",
