@@ -193,6 +193,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
           includeReasoningInRequest: normalizedModel?.supportsReasoning ?? false,
           supportParameters,
           cacheTtl: this.getAnthropicCacheTtl(config),
+          hasToolDefinitions: (options.tools?.length ?? 0) > 0 && normalizedModel.supportsTools,
         });
 
         // requestBody

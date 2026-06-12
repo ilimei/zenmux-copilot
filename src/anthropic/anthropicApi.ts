@@ -40,7 +40,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 	 */
 	convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
-		modelConfig: { includeReasoningInRequest: boolean; supportParameters: string; cacheTtl?: AnthropicCacheTtl; }
+		modelConfig: { includeReasoningInRequest: boolean; supportParameters: string; cacheTtl?: AnthropicCacheTtl; hasToolDefinitions?: boolean; }
 	): AnthropicMessage[] {
 		this._cacheTtl = modelConfig.cacheTtl ?? "5m";
 		const out: AnthropicMessage[] = [];
@@ -161,8 +161,8 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 		// 为关键消息添加缓存控制。Anthropic 最多支持 4 个缓存断点：
 		// 1. 优先给上下文消息打断点；2. 始终给最后一条消息打断点；3. 剩余配额给长文本。
-		const systemTakesCache = !!this._systemContent;
-		const maxMessagesWithCache = systemTakesCache ? 3 : 4;
+		const reservedCacheBlocks = (this._systemContent ? 1 : 0) + (modelConfig.hasToolDefinitions ? 1 : 0);
+		const maxMessagesWithCache = Math.max(0, 4 - reservedCacheBlocks);
 		const indicesToCache = this.selectCacheBreakpoints(sanitized, maxMessagesWithCache);
 
 		// 3. 应用缓存控制
