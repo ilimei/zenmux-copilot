@@ -10,10 +10,15 @@ import {
 } from "vscode";
 
 import { createRetryConfig, ensureApiKey, executeWithRetry, fetchModels } from "./utils";
+import {
+  buildCustomEndpointUrl,
+  normalizeZenMuxModel,
+  NormalizedZenMuxModel,
+  ZenMuxApiType,
+  getReasoningConfigurationSchema,
+} from "./modelCapabilities";
 import { AnthropicApi } from "./anthropic/anthropicApi";
 import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
-import { VertexApi } from "./vertex/vertexApi";
-import { VertexRequestBody } from "./vertex/vertexTypes";
 import { prepareTokenCount } from "./provideToken";
 import { updateContextStatusBar } from "./statusBar";
 import { OpenaiApi } from "./openai/openaiApi";
@@ -22,6 +27,7 @@ import { ZenMuxModelInfo } from "./types";
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
+const MODEL_REFRESH_TTL_MS = 5 * 60 * 1000;
 
 /**
  * VS Code Chat provider backed by ZenMux Inference Providers.
@@ -31,6 +37,13 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
   private _lastRequestTime: number | null = null;
 
   private _models: ZenMuxModelInfo[] = [];
+  private _normalizedModels = new Map<string, NormalizedZenMuxModel>();
+  private _languageModels: vscode.LanguageModelChatInformation[] = [];
+  private _languageModelsFetchedAt = 0;
+  private _refreshModelsPromise: Promise<void> | undefined;
+  private readonly _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
+
+  readonly onDidChangeLanguageModelChatInformation = this._onDidChangeLanguageModelChatInformation.event;
 
   /**
  * Create a provider using the given secret storage for the API key.
@@ -51,67 +64,73 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
    * @returns A promise that resolves to the list of available language models
    */
   async provideLanguageModelChatInformation(options: vscode.PrepareLanguageModelChatModelOptions, token: CancellationToken): Promise<vscode.LanguageModelChatInformation[]> {
-    // Fallback: Fetch models from API
-    const apiKey = await ensureApiKey(options.silent, this.secrets);
+    if (!options.silent || this._languageModels.length === 0 || this.isModelCacheExpired()) {
+      await this.refreshModels(options.silent);
+    }
+    return this._languageModels;
+  }
+
+  async refreshModels(silent: boolean): Promise<void> {
+    if (this._refreshModelsPromise) {
+      return this._refreshModelsPromise;
+    }
+
+    this._refreshModelsPromise = this.doRefreshModels(silent).finally(() => {
+      this._refreshModelsPromise = undefined;
+    });
+    return this._refreshModelsPromise;
+  }
+
+  private async doRefreshModels(silent: boolean): Promise<void> {
+    const apiKey = await ensureApiKey(silent, this.secrets);
     if (!apiKey) {
-      if (options.silent) {
-        return [];
+      this._models = [];
+      this._normalizedModels.clear();
+      this._languageModels = [];
+      this._languageModelsFetchedAt = 0;
+      this._onDidChangeLanguageModelChatInformation.fire();
+      if (silent) {
+        return;
       } else {
         throw new Error("ZenMux API key not found");
       }
     }
     const { models } = await fetchModels(apiKey, this.userAgent, this.output);
-    const chatModels = models.filter((m) => this.isSupportedChatModel(m.suitable_api));
-    this._models = chatModels;
+    const normalizedModels = models.map(normalizeZenMuxModel);
+    const chatModels = normalizedModels.filter((m) => m.isChatModel);
+    this._models = chatModels.map((m) => m.model);
+    this._normalizedModels = new Map(chatModels.map((m) => [m.model.slug ?? m.model.id, m]));
     this.output.appendLine(`Fetched ${models.length} models from ZenMux API, exposing ${chatModels.length} chat-capable models.`);
-    return chatModels.map(m => {
-      const maxInput = Math.max(1, m.context_length - m.max_completion_tokens || DEFAULT_MAX_TOKENS);
+    this._languageModels = chatModels.map(normalizedModel => {
+      const m = normalizedModel.model;
+      const contextLength = m.context_length || DEFAULT_CONTEXT_LENGTH;
+      let maxOutputTokens = m.max_completion_tokens || DEFAULT_MAX_TOKENS;
+      // Some models report max_completion_tokens equal (or close) to context_length,
+      // meaning input and output share the context window. Clamp the output budget
+      // so the input budget never collapses to ~0 (which makes VS Code prune all history).
+      const maxOutputCap = Math.max(1, Math.floor(contextLength / 4));
+      if (maxOutputTokens > maxOutputCap) {
+        maxOutputTokens = Math.min(maxOutputTokens, Math.max(maxOutputCap, DEFAULT_MAX_TOKENS));
+      }
+      const maxInput = Math.max(1, contextLength - maxOutputTokens);
+      const modelId = m.slug ?? m.id;
       return {
-        id: `${m.slug}`,
-        name: m.name,
-        tooltip: 'ZenMux Model ' + (m.name || ''),
+        id: modelId,
+        name: m.name ?? m.display_name ?? m.id,
+        tooltip: 'ZenMux Model ' + (m.name ?? m.display_name ?? m.id),
         detail: 'ZenMux',
-        family: m.suitable_api + '-' + m.supports_reasoning,
-        version: m.publish_time || '1.0.0',
+        family: normalizedModel.adapterProtocol,
+        version: m.publish_time || (m.created ? String(m.created) : '1.0.0'),
         maxInputTokens: maxInput,
-        maxOutputTokens: m.max_completion_tokens || DEFAULT_MAX_TOKENS,
-        capabilities: {
-          toolCalling: m.supported_parameters?.includes('tools') || false,
-          imageInput: m.input_modalities?.includes('image') || false,
-        },
+        maxOutputTokens,
+        capabilities: normalizedModel.capabilities,
+        ...(normalizedModel.supportsReasoning
+          ? { configurationSchema: getReasoningConfigurationSchema(normalizedModel.adapterProtocol) }
+          : {}),
       } as LanguageModelChatInformation;
     });
-  }
-
-  private isSupportMessage(model: vscode.LanguageModelChatInformation): boolean {
-    const family = model.family?.toLowerCase() || "";
-    return family.split("-")[0].split(",").map((api) => api.trim()).includes("messages");
-  }
-
-  private isSupportedChatModel(suitableApi: string | undefined): boolean {
-    const api = suitableApi?.toLowerCase() || "";
-    return api.includes('chat.completions') || api.includes('messages');
-  }
-
-  private isSupportResponse(model: vscode.LanguageModelChatInformation): boolean {
-    const family = model.family?.toLowerCase() || "";
-    return family.includes('responses');
-  }
-
-  private isSupportGeneration(model: vscode.LanguageModelChatInformation): boolean {
-    const family = model.family?.toLowerCase() || "";
-    return family.includes('generate');
-  }
-
-  private isSupportChat(model: vscode.LanguageModelChatInformation): boolean {
-    const family = model.family?.toLowerCase() || "";
-    return family.includes('chat.completions');
-  }
-
-  private isSupportReasoning(model: vscode.LanguageModelChatInformation): boolean {
-    const family = model.family || "";
-    const match = family.match(/-(\d+)$/);
-    return match ? Number(match[1]) > 0 : false;
+    this._languageModelsFetchedAt = Date.now();
+    this._onDidChangeLanguageModelChatInformation.fire();
   }
 
   async provideLanguageModelChatResponse(
@@ -120,9 +139,14 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     options: ProvideLanguageModelChatResponseOptions,
     progress: Progress<vscode.LanguageModelResponsePart>,
     token: CancellationToken) {
-    const zenMuxModel = this._models.find(m => m.slug === model.id);
-    try { this.output.appendLine(`Starting provideLanguageModelChatResponse ${model.family}`); } catch { } // for debug breakpoint
-    try { this.output.appendLine(`Starting provideLanguageModelChatResponse ${zenMuxModel?.supported_parameters}`); } catch { } // for debug breakpoint
+    const zenMuxModel = this._models.find(m => (m.slug ?? m.id) === model.id);
+    const normalizedModel = this._normalizedModels.get(model.id) ?? (zenMuxModel ? normalizeZenMuxModel(zenMuxModel) : undefined);
+    const effectiveZenMuxModel = zenMuxModel && normalizedModel
+      ? { ...zenMuxModel, supported_parameters: normalizedModel.selectedSupportedParameters }
+      : zenMuxModel;
+    const supportParameters = Array.isArray(effectiveZenMuxModel?.supported_parameters)
+      ? effectiveZenMuxModel.supported_parameters.join(",")
+      : effectiveZenMuxModel?.supported_parameters || "";
     // Update Token Usage
     updateContextStatusBar(messages, model, this.statusBarItem);
 
@@ -160,15 +184,19 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
       if (!apiKey) {
         throw new Error("ZenMux API key not found");
       }
-      // get model config from user settings
       const config = vscode.workspace.getConfiguration();
-      if (this.isSupportMessage(model)) {
-        const BASE_URL = config.get<string>("zenmux.anthropic.baseUrl", "https://zenmux.ai/api/anthropic");
+      const apiType = normalizedModel?.apiType ?? "chat-completions";
+      if (apiType !== "messages" && apiType !== "chat-completions") {
+        throw new Error(`ZenMux ${apiType} API routing is detected, but request conversion is not implemented yet.`);
+      }
+      const requestUrl = buildCustomEndpointUrl(this.getBaseUrlForApiType(config, apiType), apiType);
+
+      if (apiType === "messages") {
         // Anthropic API mode
         const anthropicApi = new AnthropicApi();
         const anthropicMessages = anthropicApi.convertMessages(messages, {
-          includeReasoningInRequest: this.isSupportReasoning(model),
-          supportParameters: zenMuxModel?.supported_parameters || "",
+          includeReasoningInRequest: normalizedModel?.supportsReasoning ?? false,
+          supportParameters,
         });
 
         // requestBody
@@ -178,21 +206,13 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
           stream: true,
           max_tokens: model.maxOutputTokens || DEFAULT_MAX_TOKENS,
         };
-        requestBody = anthropicApi.prepareRequestBody(requestBody, {
-          id: model.id,
-          max_tokens: model.maxOutputTokens,
-        } as any, options);
+        requestBody = anthropicApi.prepareRequestBody(requestBody, effectiveZenMuxModel, options);
 
         // send Anthropic chat request with retry
         const response = await executeWithRetry(async () => {
-          const res = await fetch(`${BASE_URL.replace(/\/+$/, "")}/v1/messages`, {
+          const res = await fetch(requestUrl, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "User-Agent": this.userAgent,
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-            },
+            headers: this.getRequestHeaders(apiType, apiKey),
             body: JSON.stringify(requestBody),
           });
 
@@ -213,12 +233,11 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
         }
         await anthropicApi.processStreamingResponse(response.body, trackingProgress, token);
       } else {
-        const BASE_URL = config.get<string>("zenmux.baseUrl", "https://zenmux.ai/api/v1");
         // OpenAI compatible API mode (default)
         const openaiApi = new OpenaiApi();
         const openaiMessages = openaiApi.convertMessages(messages, {
           includeReasoningInRequest: false,
-          supportParameters: zenMuxModel?.supported_parameters || "",
+          supportParameters,
         });
 
         // requestBody
@@ -228,18 +247,14 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
           stream: true,
           stream_options: { include_usage: true },
         };
-        requestBody = openaiApi.prepareRequestBody(requestBody, zenMuxModel, options);
+        requestBody = openaiApi.prepareRequestBody(requestBody, effectiveZenMuxModel, options);
         // console.debug("[ZenMux Model Provider] RequestBody:", JSON.stringify(requestBody));
 
         // send chat request with retry
         const response = await executeWithRetry(async () => {
-          const res = await fetch(`${BASE_URL.replace(/\/+$/, "")}/chat/completions`, {
+          const res = await fetch(requestUrl, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "User-Agent": this.userAgent,
-              "Authorization": `Bearer ${apiKey}`,
-            },
+            headers: this.getRequestHeaders(apiType, apiKey),
             body: JSON.stringify(requestBody),
           });
 
@@ -280,6 +295,35 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
         }
       });
     }
+  }
+
+  private isModelCacheExpired(): boolean {
+    return this._languageModelsFetchedAt === 0 || Date.now() - this._languageModelsFetchedAt > MODEL_REFRESH_TTL_MS;
+  }
+
+  private getBaseUrlForApiType(config: vscode.WorkspaceConfiguration, apiType: ZenMuxApiType): string {
+    switch (apiType) {
+      case "messages":
+        return config.get<string>("zenmux.anthropic.baseUrl", "https://zenmux.ai/api/anthropic");
+      default:
+        return config.get<string>("zenmux.baseUrl", "https://zenmux.ai/api/v1");
+    }
+  }
+
+  private getRequestHeaders(apiType: ZenMuxApiType, apiKey: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "User-Agent": this.userAgent,
+    };
+
+    if (apiType === "messages") {
+      headers["x-api-key"] = apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+      return headers;
+    }
+
+    headers.Authorization = `Bearer ${apiKey}`;
+    return headers;
   }
 
   /**

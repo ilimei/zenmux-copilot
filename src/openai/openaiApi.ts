@@ -23,10 +23,11 @@ import {
 	createDataUrl,
 	isToolResultPart,
 	collectToolResultText,
-	convertToolsToOpenAI,
+	convertToolsToOpenAIWithSupport,
 	supportsParameter,
 	mapRole,
 } from "../utils";
+import { getConfiguredReasoningEffort, modelSupportsReasoning } from "../modelCapabilities";
 
 import { CommonApi } from "../commonApi";
 
@@ -271,8 +272,15 @@ export class OpenaiApi extends CommonApi {
 			}
 		}
 
+		// Reasoning depth selected by the user in the model picker. ZenMux maps
+		// reasoning_effort onto the model-specific reasoning parameters.
+		const reasoningEffort = getConfiguredReasoningEffort(options);
+		if (reasoningEffort && modelSupportsReasoning(um)) {
+			orb.reasoning_effort = reasoningEffort;
+		}
+
 		// tools
-		const toolConfig = convertToolsToOpenAI(options);
+		const toolConfig = convertToolsToOpenAIWithSupport(options, um);
 		if (toolConfig.tools) {
 			orb.tools = toolConfig.tools;
 		}

@@ -64,6 +64,10 @@ export interface VertexRequestBody {
 		maxOutputTokens?: number;
 		stopSequences?: string[];
 		responseMimeType?: string;
+		thinkingConfig?: {
+			thinkingBudget?: number;
+			includeThoughts?: boolean;
+		};
 	};
 	safetySettings?: VertexSafetySettings[];
 	tools?: VertexToolDeclaration[];

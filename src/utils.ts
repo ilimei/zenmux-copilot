@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
 import { RetryConfig, ZenMuxModelInfo, ZenMuxModelResponse } from "./types";
 import { OpenAIFunctionToolDef } from "./openai/openaiTypes";
+import { modelSupportsTools, supportsParameter as supportsModelParameter } from "./modelCapabilities";
+
+const ZENMUX_MODELS_URL = "https://zenmux.ai/api/frontend/model/available/list?sort=newest";
 
 /**
  * Ensure an API key exists in SecretStorage, optionally prompting the user when not silent.
@@ -28,19 +31,15 @@ export async function ensureApiKey(silent: boolean, secrets: vscode.SecretStorag
 
 
 /**
- * Fetch the list of models and supplementary metadata from Hugging Face.
- * @param apiKey The HF API key used to authenticate.
+ * Fetch the list of models and supplementary metadata from ZenMux.
  */
 export async function fetchModels(apiKey: string, userAgent: string, output: vscode.OutputChannel): Promise<{ models: ZenMuxModelInfo[] }> {
-	const config = vscode.workspace.getConfiguration();
-	const BASE_URL = config.get<string>("zenmux.baseUrl", "");
-	if (!BASE_URL || !BASE_URL.startsWith("http")) {
-		throw new Error(`Invalid base URL configuration.`);
-	}
 	const modelsList = (async () => {
-		const resp = await fetch(`https://zenmux.ai/api/frontend/model/listByFilter`, {
+		const resp = await fetch(ZENMUX_MODELS_URL, {
 			method: "GET",
-			headers: { "User-Agent": userAgent },
+			headers: {
+				"User-Agent": userAgent,
+			},
 		});
 		if (!resp.ok) {
 			let text = "";
@@ -146,15 +145,22 @@ export function collectToolResultText(pr: { content?: ReadonlyArray<unknown> }):
 }
 
 /**
- * Convert VS Code tool definitions to OpenAI function tool definitions.
+ * Convert VS Code tool definitions to OpenAI function tool definitions only when the model supports tools.
  * @param options Request options containing tools and toolMode.
+ * @param supportedParameters Comma-separated model parameter list from the ZenMux models API.
  */
-export function convertToolsToOpenAI(options: vscode.ProvideLanguageModelChatResponseOptions): {
+export function convertToolsToOpenAIWithSupport(
+	options: vscode.ProvideLanguageModelChatResponseOptions,
+	model?: ZenMuxModelInfo
+): {
 	tools?: OpenAIFunctionToolDef[];
 	tool_choice?: "auto" | { type: "function"; function: { name: string } };
 } {
 	const tools = options.tools ?? [];
 	if (!tools || tools.length === 0) {
+		return {};
+	}
+	if (!modelSupportsTools(model)) {
 		return {};
 	}
 
@@ -189,11 +195,8 @@ export function convertToolsToOpenAI(options: vscode.ProvideLanguageModelChatRes
 /**
  * Check whether a comma-separated model capability list includes a parameter.
  */
-export function supportsParameter(supportedParameters: string | undefined, parameter: string): boolean {
-	return (supportedParameters ?? "")
-		.split(",")
-		.map((value) => value.trim().toLowerCase())
-		.includes(parameter.toLowerCase());
+export function supportsParameter(supportedParameters: string | string[] | undefined, parameter: string): boolean {
+	return supportsModelParameter(supportedParameters, parameter);
 }
 
 /**

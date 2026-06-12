@@ -18,7 +18,8 @@ import type {
 	AnthropicStreamChunk,
 } from "./anthropicTypes";
 
-import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAI, supportsParameter, mapRole } from "../utils";
+import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAIWithSupport, supportsParameter, mapRole } from "../utils";
+import { computeThinkingBudget, getConfiguredReasoningEffort, modelSupportsReasoning } from "../modelCapabilities";
 
 import { CommonApi } from "../commonApi";
 
@@ -151,20 +152,17 @@ export class AnthropicApi extends CommonApi {
 			}
 		}
 
-		const sanitized = this.sanitizeToolUsePairs(out, modelConfig.includeReasoningInRequest);
+		const sanitized = this.sanitizeToolUsePairs(out);
 
 		// 为关键消息添加缓存控制。Anthropic 最多支持 4 个缓存断点：
 		// 1. 优先给上下文消息打断点；2. 始终给最后一条消息打断点；3. 剩余配额给长文本。
-		const usePromptCache = supportsParameter(modelConfig.supportParameters, "cache_control");
-		const systemTakesCache = usePromptCache && !!this._systemContent;
+		const systemTakesCache = !!this._systemContent;
 		const maxMessagesWithCache = systemTakesCache ? 3 : 4;
-		const indicesToCache = usePromptCache
-			? this.selectCacheBreakpoints(sanitized, maxMessagesWithCache)
-			: new Set<number>();
+		const indicesToCache = this.selectCacheBreakpoints(sanitized, maxMessagesWithCache);
 
 		// 3. 应用缓存控制
 		const messagesWithCache = sanitized.map((msg, index) => {
-			if (usePromptCache && indicesToCache.has(index) && Array.isArray(msg.content) && msg.content.length > 0) {
+			if (indicesToCache.has(index) && Array.isArray(msg.content) && msg.content.length > 0) {
 				const contentBlocks = [...msg.content];
 				// 尝试在最后一个支持缓存的 block 上添加标记
 				// 注意：Thinking block 目前可能不支持，所以要找到最后一个支持的类型
@@ -173,9 +171,7 @@ export class AnthropicApi extends CommonApi {
 					const block = contentBlocks[i];
 					if (
 						block.type === "text" ||
-						block.type === "image" ||
-						block.type === "tool_use" ||
-						block.type === "tool_result"
+						block.type === "image"
 					) {
 						targetBlockIndex = i;
 						break;
@@ -247,12 +243,7 @@ export class AnthropicApi extends CommonApi {
 		}
 		for (let i = content.length - 1; i >= 0; i--) {
 			const block = content[i];
-			if (
-				block.type === "text" ||
-				block.type === "image" ||
-				block.type === "tool_use" ||
-				block.type === "tool_result"
-			) {
+			if (block.type === "text" || block.type === "image") {
 				return i;
 			}
 		}
@@ -274,7 +265,7 @@ export class AnthropicApi extends CommonApi {
 	 * contain interrupted or pruned tool calls, so remove unmatched tool blocks
 	 * before sending the conversation upstream.
 	 */
-	private sanitizeToolUsePairs(messages: AnthropicMessage[], requireThinkingForToolUse: boolean): AnthropicMessage[] {
+	private sanitizeToolUsePairs(messages: AnthropicMessage[]): AnthropicMessage[] {
 		const sanitized: AnthropicMessage[] = [];
 
 		for (let i = 0; i < messages.length; i++) {
@@ -287,15 +278,6 @@ export class AnthropicApi extends CommonApi {
 					.map((block) => block.id);
 
 				if (toolUseIds.length > 0) {
-					const hasThinking = currentBlocks.some((block) => block.type === "thinking");
-					if (requireThinkingForToolUse && !hasThinking) {
-						const filteredBlocks = currentBlocks.filter((block) => block.type !== "tool_use");
-						if (filteredBlocks.length > 0) {
-							sanitized.push({ ...current, content: filteredBlocks });
-						}
-						continue;
-					}
-
 					const next = messages[i + 1];
 					const nextBlocks = next && next.role === "user" && Array.isArray(next.content) ? next.content : [];
 					const resultIds = new Set(
@@ -352,20 +334,15 @@ export class AnthropicApi extends CommonApi {
 		// 	arb.max_tokens = um.max_tokens;
 		// }
 
-		// Add system content if we extracted it with cache control
+		// Add system content with prompt-cache breakpoint.
 		if (this._systemContent) {
-			if (supportsParameter(um?.supported_parameters, "cache_control")) {
-				// 使用结构化 system 格式以支持缓存
-				arb.system = [
-					{
-						type: "text",
-						text: this._systemContent,
-						cache_control: { type: "ephemeral" }, // System 消息总是缓存
-					},
-				];
-			} else {
-				arb.system = this._systemContent;
-			}
+			arb.system = [
+				{
+					type: "text",
+					text: this._systemContent,
+					cache_control: { type: "ephemeral" },
+				},
+			];
 		}
 
 		// Add temperature
@@ -387,7 +364,7 @@ export class AnthropicApi extends CommonApi {
 		// }
 
 		// Add tools configuration
-		const toolConfig = convertToolsToOpenAI(options);
+		const toolConfig = convertToolsToOpenAIWithSupport(options, um);
 		if (toolConfig.tools) {
 			// Convert OpenAI tool definitions to Anthropic format
 			arb.tools = toolConfig.tools.map((tool) => ({
@@ -403,6 +380,29 @@ export class AnthropicApi extends CommonApi {
 				arb.tool_choice = { type: "auto" };
 			} else if (typeof toolConfig.tool_choice === "object" && toolConfig.tool_choice.type === "function") {
 				arb.tool_choice = { type: "tool", name: toolConfig.tool_choice.function.name };
+			}
+		}
+
+		// Reasoning depth selected by the user. Prefer passing the effort through
+		// untouched via output_config (ZenMux gateway semantics, matching the official
+		// custom-endpoint request shape); only fall back to a client-computed
+		// thinking budget when the gateway declares the raw Anthropic `thinking`
+		// parameter instead. Anthropic does not support forced tool calling while
+		// thinking is enabled, so skip it in that case.
+		const reasoningEffort = getConfiguredReasoningEffort(options);
+		if (
+			reasoningEffort &&
+			modelSupportsReasoning(um) &&
+			arb.tool_choice?.type !== "tool"
+		) {
+			if (supportsParameter(um?.supported_parameters, "output_config")) {
+				arb.output_config = { effort: reasoningEffort };
+			} else if (supportsParameter(um?.supported_parameters, "thinking")) {
+				const maxTokens = arb.max_tokens ?? 4096;
+				arb.thinking = {
+					type: "enabled",
+					budget_tokens: computeThinkingBudget(reasoningEffort, maxTokens),
+				};
 			}
 		}
 

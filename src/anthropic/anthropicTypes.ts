@@ -83,6 +83,10 @@ export interface AnthropicRequestBody {
 		type: "enabled";
 		budget_tokens: number;
 	};
+	/** ZenMux gateway extension: pass the reasoning effort through untouched. */
+	output_config?: {
+		effort: string;
+	};
 	tools?: AnthropicToolDefinition[];
 	tool_choice?: AnthropicToolChoice;
 }

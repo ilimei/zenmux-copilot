@@ -30,6 +30,9 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 	// Register the ZenMux provider under the vendor id used in package.json
 	vscode.lm.registerLanguageModelChatProvider("zenmux", provider);
+	provider.refreshModels(true).catch((error) => {
+		output.appendLine(`[ZenMux Model Provider] Failed to refresh models on startup: ${error instanceof Error ? error.message : String(error)}`);
+	});
 
 	output.appendLine("ZenMux Chat Model Provider activated.");
 
@@ -49,10 +52,12 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 			if (!apiKey.trim()) {
 				await context.secrets.delete("zenmux.apiKey");
+				await provider.refreshModels(true);
 				vscode.window.showInformationMessage("ZenMux API key cleared.");
 				return;
 			}
 			await context.secrets.store("zenmux.apiKey", apiKey.trim());
+			await provider.refreshModels(true);
 			vscode.window.showInformationMessage("ZenMux API key saved.");
 		})
 	);

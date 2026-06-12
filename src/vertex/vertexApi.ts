@@ -18,7 +18,8 @@ import type {
 	VertexFunctionResponsePart,
 } from "./vertexTypes";
 
-import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAI, mapRole } from "../utils";
+import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAIWithSupport, mapRole } from "../utils";
+import { computeThinkingBudget, getConfiguredReasoningEffort, modelSupportsReasoning } from "../modelCapabilities";
 
 import { CommonApi } from "../commonApi";
 
@@ -145,8 +146,6 @@ export class VertexApi extends CommonApi {
 			}
 		}
 
-		console.info(out);
-
 		return out;
 	}
 
@@ -173,6 +172,15 @@ export class VertexApi extends CommonApi {
 			};
 		}
 
+		// Thinking depth selected by the user in the model picker.
+		const reasoningEffort = getConfiguredReasoningEffort(options);
+		if (reasoningEffort && modelSupportsReasoning(um)) {
+			const maxOutputTokens = vrb.generationConfig.maxOutputTokens ?? um?.max_completion_tokens ?? 8192;
+			vrb.generationConfig.thinkingConfig = {
+				thinkingBudget: computeThinkingBudget(reasoningEffort, maxOutputTokens),
+			};
+		}
+
 		// Add temperature
 		// const oTemperature = options.modelOptions?.temperature ?? 0;
 		// const temperature = um?.temperature ?? oTemperature;
@@ -192,7 +200,7 @@ export class VertexApi extends CommonApi {
 		// }
 
 		// Add tools configuration
-		const toolConfig = convertToolsToOpenAI(options);
+		const toolConfig = convertToolsToOpenAIWithSupport(options, um);
 		if (toolConfig.tools) {
 			// Convert OpenAI tool definitions to Vertex format
 			vrb.tools = [

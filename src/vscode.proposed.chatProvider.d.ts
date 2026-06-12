@@ -14,6 +14,15 @@ declare module "vscode" {
 		 * What extension initiated the request to the language model
 		 */
 		readonly requestInitiator: string;
+
+		/**
+		 * Per-model configuration provided by the user. This contains values configured
+		 * in the user's language models configuration file, validated against the model's
+		 * {@linkcode LanguageModelChatInformation.configurationSchema configurationSchema}.
+		 */
+		readonly modelConfiguration?: {
+			readonly [key: string]: any;
+		};
 	}
 
 	/**
@@ -51,7 +60,38 @@ declare module "vscode" {
 		readonly category?: { label: string; order: number };
 
 		readonly statusIcon?: ThemeIcon;
+
+		/**
+		 * An optional JSON schema describing the configuration options for this model.
+		 * When set, users can specify per-model configuration (e.g. in the model picker).
+		 * The configured values are merged into the request options when sending chat
+		 * requests to this model, available as
+		 * {@linkcode ProvideLanguageModelChatResponseOptions.modelConfiguration}.
+		 */
+		readonly configurationSchema?: LanguageModelConfigurationSchema;
 	}
+
+	/**
+	 * A [JSON Schema](https://json-schema.org) describing configuration options for a language model.
+	 * Each property in `properties` defines a configurable option using standard JSON Schema fields
+	 * plus additional display hints.
+	 */
+	export type LanguageModelConfigurationSchema = {
+		readonly properties?: {
+			readonly [key: string]: Record<string, any> & {
+				/**
+				 * Human-readable labels for enum values, shown instead of the raw values.
+				 * Must have the same length and order as `enum`.
+				 */
+				readonly enumItemLabels?: string[];
+				/**
+				 * The group this property belongs to. When set to `'navigation'`, the property
+				 * is shown as a primary action in the model picker.
+				 */
+				readonly group?: string;
+			};
+		};
+	};
 
 	export interface LanguageModelChatCapabilities {
 		/**
