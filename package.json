@@ -96,6 +96,15 @@
 					"default": "https://zenmux.ai/api/anthropic",
 					"description": "The base URL for the ZenMux Anthropic-compatible inference API."
 				},
+				"zenmux.anthropic.cacheTtl": {
+					"type": "string",
+					"enum": [
+						"5m",
+						"1h"
+					],
+					"default": "5m",
+					"description": "Prompt cache TTL for Anthropic-compatible Messages API requests. 1h cache writes cost more and are only sent to Anthropic-compatible models."
+				},
 				"zenmux.retry": {
 					"type": "object",
 					"default": {

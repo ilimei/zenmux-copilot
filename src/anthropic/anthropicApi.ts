@@ -14,6 +14,7 @@ import type {
 	AnthropicToolUseBlock,
 	AnthropicToolResultBlock,
 	AnthropicStreamChunk,
+	CacheControl,
 } from "./anthropicTypes";
 
 import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAIWithSupport, supportsParameter, mapRole } from "../utils";
@@ -21,8 +22,11 @@ import { computeThinkingBudget, getConfiguredReasoningEffort, modelSupportsReaso
 
 import { CommonApi } from "../commonApi";
 
+type AnthropicCacheTtl = "5m" | "1h";
+
 export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBody> {
 	private _systemContent: string | undefined;
+	private _cacheTtl: AnthropicCacheTtl = "5m";
 
 	constructor() {
 		super();
@@ -36,8 +40,9 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 	 */
 	convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
-		modelConfig: { includeReasoningInRequest: boolean; supportParameters: string; }
+		modelConfig: { includeReasoningInRequest: boolean; supportParameters: string; cacheTtl?: AnthropicCacheTtl; }
 	): AnthropicMessage[] {
+		this._cacheTtl = modelConfig.cacheTtl ?? "5m";
 		const out: AnthropicMessage[] = [];
 
 		for (const m of messages) {
@@ -180,7 +185,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 				if (targetBlockIndex !== -1) {
 					const targetBlock = contentBlocks[targetBlockIndex];
-					(targetBlock as any).cache_control = { type: "ephemeral" };
+					(targetBlock as any).cache_control = this.createCacheControl();
 				}
 
 				return { ...msg, content: contentBlocks };
@@ -206,6 +211,12 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 
 			return { ...message, content };
 		});
+	}
+
+	private createCacheControl(): CacheControl {
+		return this._cacheTtl === "1h"
+			? { type: "ephemeral", ttl: "1h" }
+			: { type: "ephemeral" };
 	}
 
 	private appendSyntheticUserAfterTrailingAssistant(messages: AnthropicMessage[]): AnthropicMessage[] {
@@ -375,7 +386,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 				{
 					type: "text",
 					text: this._systemContent,
-					cache_control: { type: "ephemeral" },
+					cache_control: this.createCacheControl(),
 				},
 			];
 		}
@@ -407,6 +418,10 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 				description: tool.function.description,
 				input_schema: tool.function.parameters,
 			}));
+			const lastTool = arb.tools.at(-1);
+			if (lastTool) {
+				lastTool.cache_control = this.createCacheControl();
+			}
 		}
 
 		// Add tool_choice

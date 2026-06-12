@@ -7,6 +7,7 @@ export type AnthropicRole = "user" | "assistant";
 
 export interface CacheControl {
 	type: "ephemeral";
+	ttl?: "1h";
 }
 
 export interface AnthropicTextBlock {
@@ -95,6 +96,7 @@ export interface AnthropicToolDefinition {
 	name: string;
 	description?: string;
 	input_schema?: object;
+	cache_control?: CacheControl;
 }
 
 export type AnthropicToolChoice =

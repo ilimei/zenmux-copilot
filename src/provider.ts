@@ -192,6 +192,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
         const anthropicMessages = anthropicApi.convertMessages(messages, {
           includeReasoningInRequest: normalizedModel?.supportsReasoning ?? false,
           supportParameters,
+          cacheTtl: this.getAnthropicCacheTtl(config),
         });
 
         // requestBody
@@ -260,7 +261,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     const response = await executeWithRetry(async () => {
       const res = await fetch(requestUrl, {
         method: "POST",
-        headers: this.getRequestHeaders(apiType, apiKey),
+        headers: this.getRequestHeaders(apiType, apiKey, requestBody),
         body: JSON.stringify(requestBody),
       });
 
@@ -294,7 +295,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     }
   }
 
-  private getRequestHeaders(apiType: ZenMuxApiType, apiKey: string): Record<string, string> {
+  private getRequestHeaders(apiType: ZenMuxApiType, apiKey: string, requestBody: unknown): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "User-Agent": this.userAgent,
@@ -303,11 +304,48 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     if (apiType === "messages") {
       headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = "2023-06-01";
+      headers["anthropic-beta"] = this.getAnthropicBetaHeader(requestBody);
       return headers;
     }
 
     headers.Authorization = `Bearer ${apiKey}`;
     return headers;
+  }
+
+  private getAnthropicBetaHeader(requestBody: unknown): string {
+    const betas = ["interleaved-thinking-2025-05-14"];
+    if (this.hasAnthropicTools(requestBody)) {
+      betas.push("advanced-tool-use-2025-11-20");
+    }
+    if (this.hasOneHourCacheControl(requestBody)) {
+      betas.push("extended-cache-ttl-2025-04-11");
+    }
+    return betas.join(",");
+  }
+
+  private getAnthropicCacheTtl(config: vscode.WorkspaceConfiguration): "5m" | "1h" {
+    return config.get<"5m" | "1h">("zenmux.anthropic.cacheTtl", "5m") === "1h" ? "1h" : "5m";
+  }
+
+  private hasAnthropicTools(requestBody: unknown): boolean {
+    if (!requestBody || typeof requestBody !== "object") {
+      return false;
+    }
+    const tools = (requestBody as { tools?: unknown }).tools;
+    return Array.isArray(tools) && tools.length > 0;
+  }
+
+  private hasOneHourCacheControl(value: unknown): boolean {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    if ((value as { cache_control?: { ttl?: unknown } }).cache_control?.ttl === "1h") {
+      return true;
+    }
+    if (Array.isArray(value)) {
+      return value.some((item) => this.hasOneHourCacheControl(item));
+    }
+    return Object.values(value).some((item) => this.hasOneHourCacheControl(item));
   }
 
   /**
