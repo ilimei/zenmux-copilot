@@ -19,7 +19,7 @@
 		"type": "git",
 		"url": "git@github.com:ilimei/zenmux-copilot.git"
 	},
-	"version": "0.1.17",
+	"version": "0.1.18",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -163,7 +163,7 @@
 		"lint": "eslint",
 		"format": "prettier --write .",
 		"watch": "tsc -watch -p ./",
-		"test": "npm run compile && vscode-test",
+		"test": "npm run compile && node --test test/*.test.cjs",
 		"build": "npx @vscode/vsce package --baseContentUrl https://raw.githubusercontent.com/ilimei/zenmux-copilot/refs/heads/initial-commit/ -o extension.vsix"
 	},
 	"devDependencies": {

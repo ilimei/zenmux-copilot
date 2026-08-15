@@ -29,7 +29,8 @@ export function activate(context: vscode.ExtensionContext) {
 		() => subscriptionStatusBar.refreshAfterChatRequest()
 	);
 	// Register the ZenMux provider under the vendor id used in package.json
-	vscode.lm.registerLanguageModelChatProvider("zenmux", provider);
+	const providerRegistration = vscode.lm.registerLanguageModelChatProvider("zenmux", provider);
+	context.subscriptions.push(provider, providerRegistration);
 	provider.refreshModels(true).catch((error) => {
 		output.appendLine(`[ZenMux Model Provider] Failed to refresh models on startup: ${error instanceof Error ? error.message : String(error)}`);
 	});
@@ -80,7 +81,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 async function refreshModelsAfterKeyChange(provider: ZenMuxChatModelProvider, output: vscode.OutputChannel): Promise<void> {
 	try {
-		await provider.refreshModels(true);
+		await provider.refreshModelsAndNotify(true);
 	} catch (error) {
 		output.appendLine(`[ZenMux Model Provider] Failed to refresh models after API key change: ${error instanceof Error ? error.message : String(error)}`);
 	}

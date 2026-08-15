@@ -22,6 +22,7 @@ import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
 import { prepareTokenCount } from "./provideToken";
 import { updateContextStatusBar } from "./statusBar";
 import { OpenaiApi } from "./openai/openaiApi";
+import { ModelRefreshCache } from "./modelRefreshCache";
 
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
@@ -32,13 +33,13 @@ const MIN_INPUT_TOKENS = 1;
 /**
  * VS Code Chat provider backed by ZenMux Inference Providers.
  */
-export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
+export class ZenMuxChatModelProvider implements LanguageModelChatProvider, vscode.Disposable {
   /** Track last request completion time for delay calculation. */
   private _lastRequestTime: number | null = null;
 
   private _normalizedModels = new Map<string, NormalizedZenMuxModel>();
   private _languageModels: vscode.LanguageModelChatInformation[] = [];
-  private _languageModelsFetchedAt = 0;
+  private readonly _modelRefreshCache = new ModelRefreshCache(MODEL_REFRESH_TTL_MS);
   private _refreshModelsPromise: Promise<void> | undefined;
   private readonly _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
 
@@ -63,7 +64,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
    * @returns A promise that resolves to the list of available language models
    */
   async provideLanguageModelChatInformation(options: vscode.PrepareLanguageModelChatModelOptions, token: CancellationToken): Promise<vscode.LanguageModelChatInformation[]> {
-    if (!options.silent || this._languageModels.length === 0 || this.isModelCacheExpired()) {
+    if (this._modelRefreshCache.shouldRefresh(options.silent)) {
       await this.refreshModels(options.silent);
     }
     return this._languageModels;
@@ -85,8 +86,7 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
     if (!apiKey) {
       this._normalizedModels.clear();
       this._languageModels = [];
-      this._languageModelsFetchedAt = 0;
-      this._onDidChangeLanguageModelChatInformation.fire();
+      this._modelRefreshCache.markRefreshed();
       if (silent) {
         return;
       } else {
@@ -126,8 +126,25 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
         configurationSchema: getModelConfigurationSchema(normalizedModel.adapterProtocol, normalizedModel.supportsReasoning),
       } as LanguageModelChatInformation;
     });
-    this._languageModelsFetchedAt = Date.now();
+    this._modelRefreshCache.markRefreshed();
+  }
+
+  /**
+   * Refresh after an external state change, then notify VS Code exactly once.
+   * Model discovery itself must never emit this event or it can recursively
+   * trigger another discovery pass.
+   */
+  async refreshModelsAndNotify(silent: boolean): Promise<void> {
+    if (this._refreshModelsPromise) {
+      await this._refreshModelsPromise;
+    }
+    this._modelRefreshCache.invalidate();
+    await this.refreshModels(silent);
     this._onDidChangeLanguageModelChatInformation.fire();
+  }
+
+  dispose(): void {
+    this._onDidChangeLanguageModelChatInformation.dispose();
   }
 
   async provideLanguageModelChatResponse(
@@ -250,10 +267,6 @@ export class ZenMuxChatModelProvider implements LanguageModelChatProvider {
         }
       });
     }
-  }
-
-  private isModelCacheExpired(): boolean {
-    return this._languageModelsFetchedAt === 0 || Date.now() - this._languageModelsFetchedAt > MODEL_REFRESH_TTL_MS;
   }
 
   private getConfiguredMaxContextTokens(): number | undefined {
